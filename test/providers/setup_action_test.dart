@@ -2057,5 +2057,35 @@ void main() {
         verify(() => core.setupConfig(any())).called(1);
       },
     );
+
+    test(
+      'failed network restoration keeps running enabled for retry',
+      () async {
+        final core = _MockCoreHandlerInterface();
+        when(() => core.resetTraffic()).thenAnswer((_) async {});
+        when(
+          () => core.setupConfig(any()),
+        ).thenThrow(StateError('network not ready'));
+        final scoped = ProviderContainer(
+          overrides: [
+            currentProfileProvider.overrideWithValue(null),
+            setupStateProvider.overrideWith((_, _) => nullProfileSetupState),
+            coreHandlerProvider.overrideWithValue(CoreController.scoped(core)),
+            setupActionProvider.overrideWith(_MessageFailureSetupAction.new),
+          ],
+        );
+        addTearDown(scoped.dispose);
+        final action =
+            scoped.read(setupActionProvider.notifier)
+                as _MessageFailureSetupAction;
+
+        expect(await action.restoreRunning(), isFalse);
+        expect(scoped.read(isStartProvider), isTrue);
+        expect(action.coreRunningCalls, isEmpty);
+        await action.setRunning(false);
+        expect(scoped.read(isStartProvider), isFalse);
+        expect(action.coreRunningCalls, [false]);
+      },
+    );
   });
 }

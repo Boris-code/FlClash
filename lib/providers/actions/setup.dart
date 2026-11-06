@@ -23,12 +23,14 @@ class _RunRequest {
   /// Adopts a run the Android service has, config and groups alike.
   final bool resume;
   final DateTime? previousStartTime;
+  final bool preserveRunningOnFailure;
 
   const _RunRequest({
     required this.running,
     required this.initialize,
     required this.resume,
     required this.previousStartTime,
+    this.preserveRunningOnFailure = false,
   });
 }
 
@@ -165,16 +167,21 @@ class SetupAction extends _$SetupAction {
     return _run(running, initialize: running && initialize);
   }
 
+  Future<bool> restoreRunning() =>
+      _run(true, initialize: true, preserveRunningOnFailure: true);
+
   Future<bool> _run(
     bool running, {
     required bool initialize,
     bool resume = false,
+    bool preserveRunningOnFailure = false,
   }) {
     final request = _RunRequest(
       running: running,
       initialize: initialize,
       resume: resume,
       previousStartTime: _startTime,
+      preserveRunningOnFailure: preserveRunningOnFailure,
     );
     _latestRunRequest = request;
     _setLocalRunning(running);
@@ -189,13 +196,16 @@ class SetupAction extends _$SetupAction {
       var applied = false;
       try {
         applied = await applyProfile(
+          silence: request.preserveRunningOnFailure,
           force: !request.resume,
           preloadInvoke: () => _startCoreRunning(request),
         );
       } catch (_) {
         applied = false;
       }
-      if (!applied && _isCurrent(request)) {
+      if (!applied &&
+          _isCurrent(request) &&
+          !request.preserveRunningOnFailure) {
         await globalState.safeRun(() => setRunning(false));
       }
       return applied;

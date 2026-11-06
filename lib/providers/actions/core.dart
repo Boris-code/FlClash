@@ -6,6 +6,7 @@ class CoreAction extends _$CoreAction {
 
   int _requestedRestartRevision = 0;
   Future<bool>? _restartOperation;
+  bool _preserveRunningOnFailure = false;
 
   @override
   void build() {}
@@ -108,6 +109,11 @@ class CoreAction extends _$CoreAction {
     return operation;
   }
 
+  Future<bool> recoverCore() {
+    _preserveRunningOnFailure = true;
+    return restartCore();
+  }
+
   Future<bool> _runRestartWorker() async {
     try {
       ref.read(coreStatusProvider.notifier).value = CoreStatus.connecting;
@@ -121,9 +127,10 @@ class CoreAction extends _$CoreAction {
       while (appliedRevision < _requestedRestartRevision) {
         final revision = _requestedRestartRevision;
         if (ref.read(isStartProvider)) {
-          applied = await ref
-              .read(setupActionProvider.notifier)
-              .setRunning(true, initialize: true);
+          final setup = ref.read(setupActionProvider.notifier);
+          applied = _preserveRunningOnFailure
+              ? await setup.restoreRunning()
+              : await setup.setRunning(true, initialize: true);
         } else {
           applied = await ref
               .read(setupActionProvider.notifier)
@@ -131,12 +138,16 @@ class CoreAction extends _$CoreAction {
         }
         appliedRevision = revision;
       }
+      if (!applied && _preserveRunningOnFailure) {
+        ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
+      }
       return applied;
     } catch (_) {
       ref.read(coreStatusProvider.notifier).value = CoreStatus.disconnected;
       rethrow;
     } finally {
       _restartOperation = null;
+      _preserveRunningOnFailure = false;
     }
   }
 }

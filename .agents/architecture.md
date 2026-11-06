@@ -287,6 +287,15 @@ choose one for a new setting.
 Direct launch is used on macOS, inside an AppImage, and as the Windows/Linux fallback when the privileged Helper is not
 ready. When the Helper is ready, it owns the Core child and Dart owns it through a session-scoped lease.
 
+On macOS, `ApplicationState` schedules `NetworkRecovery` after a physical connectivity change or the workspace's
+`didWakeNotification`, delivered through the network-events EventChannel even while the window is hidden. The same channel
+observes physical interface address changes through `SCDynamicStore`, covering a Wi-Fi change that keeps the same
+connectivity type. Recovery waits for connectivity, then `CoreAction.recoverCore` replaces the Core through the existing
+desktop lifecycle owner, rebuilding its connections, DNS, interface state and enabled TUN before reapplying the current
+system proxy and DNS. `SetupAction.restoreRunning` preserves running intent if reapplying the profile fails so a later
+attempt can retry. Attempts are serialized and debounced; failures retry with exponential backoff capped at 30 seconds.
+Stopping or suspending the proxy cancels pending recovery, and safe mode disables it.
+
 ### Android Service Lifecycle
 
 Android deliberately keeps Flutter requests optimistic and the native layer authoritative:

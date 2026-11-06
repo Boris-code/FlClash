@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:fl_clash/bootstrap.dart';
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/common/network_recovery.dart';
 import 'package:fl_clash/common/system_dns.dart';
 import 'package:fl_clash/common/window.dart';
 import 'package:fl_clash/enum/enum.dart';
@@ -26,6 +27,7 @@ Widget buildManagerStack({
   required Future<void> Function(List<ConnectivityResult> results)
   onConnectivityChanged,
   Stream<ProcessSignal>? terminateSignals,
+  VoidCallback? onHostNetworkChanged,
   required Widget child,
 }) {
   final platformApp = isDesktop
@@ -35,6 +37,7 @@ Widget buildManagerStack({
     child: CoreManager(
       child: ConnectivityManager(
         onConnectivityChanged: onConnectivityChanged,
+        onHostNetworkChanged: onHostNetworkChanged,
         child: platformApp,
       ),
     ),
@@ -62,6 +65,8 @@ class Application extends ConsumerStatefulWidget {
 class ApplicationState extends ConsumerState<Application> {
   Timer? _autoUpdateProfilesTaskTimer;
   bool _preHasVpn = false;
+  NetworkRecovery? _networkRecovery;
+  String? _previousNetwork;
   // Windows can only watch SIGINT and SIGHUP.
   final _terminateSignals = system.isDesktop && !system.isWindows
       ? ProcessSignal.sigterm.watch()
@@ -70,6 +75,18 @@ class ApplicationState extends ConsumerState<Application> {
   @override
   void initState() {
     super.initState();
+    if (system.isMacOS) {
+      _networkRecovery = NetworkRecovery(
+        isEnabled: () => mounted && _canRecoverNetwork,
+        recover: _recoverNetwork,
+      );
+      ref.listenManual(isStartProvider, (_, next) {
+        if (!next) _networkRecovery?.cancel();
+      });
+      ref.listenManual(suspendProvider, (_, next) {
+        if (next) _networkRecovery?.cancel();
+      });
+    }
     SystemNavigator.setFrameworkHandlesBack(true);
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
       if (globalState.navigatorKey.currentContext != null) {
@@ -132,11 +149,21 @@ class ApplicationState extends ConsumerState<Application> {
     commonPrint.log('connectivityChanged ${results.toString()}');
     unawaited(systemDnsCoordinator?.resync() ?? Future.value());
     unawaited(ref.read(systemActionProvider.notifier).updateLocalIp());
+    if (_networkRecovery case final recovery?) {
+      final network = _physicalNetwork(results);
+      final previous = _previousNetwork;
+      _previousNetwork = network;
+      if (network.isEmpty) {
+        recovery.cancel();
+      } else if (previous != null && previous != network) {
+        recovery.request();
+      }
+    }
     final hasVpn = results.contains(ConnectivityResult.vpn);
     if (_preHasVpn == hasVpn) {
       ref.read(routeTrackerProvider.notifier).bumpHostEpoch();
       // Android's NetworkObserver tells the Core about a new network itself.
-      if (system.isDesktop) {
+      if (system.isDesktop && !system.isMacOS) {
         debouncer.call(
           FunctionTag.networkChange,
           ref.read(coreActionProvider.notifier).reportNetworkChange,
@@ -145,6 +172,51 @@ class ApplicationState extends ConsumerState<Application> {
       }
     }
     _preHasVpn = hasVpn;
+  }
+
+  bool get _canRecoverNetwork =>
+      ref.read(initProvider) &&
+      ref.read(isStartProvider) &&
+      !ref.read(suspendProvider) &&
+      !ref.read(safeModeProvider);
+
+  String _physicalNetwork(List<ConnectivityResult> results) {
+    final networks =
+        results
+            .where(
+              (result) =>
+                  result != ConnectivityResult.none &&
+                  result != ConnectivityResult.vpn,
+            )
+            .map((result) => result.name)
+            .toSet()
+            .toList()
+          ..sort();
+    return networks.join(',');
+  }
+
+  Future<bool> _recoverNetwork() async {
+    try {
+      final network = await Connectivity().checkConnectivity();
+      if (!mounted || !_canRecoverNetwork) return true;
+      if (_physicalNetwork(network).isEmpty) return false;
+      if (ref.read(coreStatusProvider) == CoreStatus.connecting) return false;
+      if (!await ref.read(coreActionProvider.notifier).recoverCore()) {
+        return false;
+      }
+      if (!mounted || !_canRecoverNetwork) return true;
+      ref.read(routeTrackerProvider.notifier).bumpHostEpoch();
+      await systemProxyQueue?.apply(ref.read(proxyStateProvider));
+      await systemDnsCoordinator?.resync();
+      commonPrint.log('Network recovery completed');
+      return true;
+    } catch (error) {
+      commonPrint.log(
+        'Network recovery failed: $error',
+        logLevel: LogLevel.warning,
+      );
+      return false;
+    }
   }
 
   @override
@@ -169,6 +241,9 @@ class ApplicationState extends ConsumerState<Application> {
             return buildManagerStack(
               isDesktop: system.isDesktop,
               onConnectivityChanged: _handleConnectivityChanged,
+              onHostNetworkChanged: system.isMacOS
+                  ? _networkRecovery?.request
+                  : null,
               terminateSignals: _terminateSignals,
               child: child!,
             );
@@ -204,6 +279,7 @@ class ApplicationState extends ConsumerState<Application> {
 
   @override
   void dispose() {
+    _networkRecovery?.dispose();
     linkManager.destroy();
     _autoUpdateProfilesTaskTimer?.cancel();
     super.dispose();

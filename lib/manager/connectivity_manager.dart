@@ -7,6 +7,7 @@ import 'package:fl_clash/providers/app.dart';
 import 'package:fl_clash/providers/config.dart';
 import 'package:fl_clash/providers/on_demand.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wifi_ssid/wifi_ssid.dart';
 
@@ -16,6 +17,8 @@ class ConnectivityManager extends ConsumerStatefulWidget {
   final Function(List<ConnectivityResult> results)? onConnectivityChanged;
   final Stream<List<ConnectivityResult>>? connectivityStream;
   final SsidReader? readSsid;
+  final VoidCallback? onHostNetworkChanged;
+  final Stream<void>? hostNetworkStream;
   final Widget child;
 
   const ConnectivityManager({
@@ -23,6 +26,8 @@ class ConnectivityManager extends ConsumerStatefulWidget {
     this.onConnectivityChanged,
     this.connectivityStream,
     this.readSsid,
+    this.onHostNetworkChanged,
+    this.hostNetworkStream,
     required this.child,
   });
 
@@ -33,6 +38,7 @@ class ConnectivityManager extends ConsumerStatefulWidget {
 
 class _ConnectivityManagerState extends ConsumerState<ConnectivityManager> {
   late final StreamSubscription subscription;
+  StreamSubscription<void>? _hostNetworkSubscription;
   late final SsidReader _readSsid =
       widget.readSsid ?? WifiSsidManager.instance.getSsid;
 
@@ -45,6 +51,22 @@ class _ConnectivityManagerState extends ConsumerState<ConnectivityManager> {
     final stream =
         widget.connectivityStream ?? Connectivity().onConnectivityChanged;
     subscription = stream.listen(_handleResults);
+    if (widget.onHostNetworkChanged != null) {
+      final changes =
+          widget.hostNetworkStream ??
+          const EventChannel(
+            '$packageName/network-events',
+          ).receiveBroadcastStream().map<void>((_) {});
+      _hostNetworkSubscription = changes.listen(
+        (_) => widget.onHostNetworkChanged?.call(),
+        onError: (Object error) {
+          commonPrint.log(
+            'Unable to observe host network changes: $error',
+            logLevel: LogLevel.warning,
+          );
+        },
+      );
+    }
     ref.listenManual(excludeSSIDsProvider.select((state) => state.isNotEmpty), (
       previous,
       next,
@@ -107,6 +129,7 @@ class _ConnectivityManagerState extends ConsumerState<ConnectivityManager> {
   @override
   void dispose() {
     subscription.cancel();
+    _hostNetworkSubscription?.cancel();
     super.dispose();
   }
 

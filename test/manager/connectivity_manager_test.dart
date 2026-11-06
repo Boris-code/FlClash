@@ -36,6 +36,8 @@ void main() {
     WidgetTester tester, {
     required SsidReader readSsid,
     void Function(List<ConnectivityResult>)? onConnectivityChanged,
+    Stream<void>? hostNetworkStream,
+    VoidCallback? onHostNetworkChanged,
     List<String> excludeSSIDs = const ['Home'],
   }) async {
     await tester.pumpWidget(
@@ -45,6 +47,8 @@ void main() {
           connectivityStream: connectivity.stream,
           readSsid: readSsid,
           onConnectivityChanged: onConnectivityChanged,
+          hostNetworkStream: hostNetworkStream,
+          onHostNetworkChanged: onHostNetworkChanged,
           child: const SizedBox.shrink(),
         ),
       ),
@@ -53,6 +57,31 @@ void main() {
   }
 
   String? currentSsid() => container.read(currentSSIDProvider);
+
+  testWidgets('forwards system wake while the window is hidden', (
+    tester,
+  ) async {
+    final wakes = StreamController<void>.broadcast();
+    addTearDown(wakes.close);
+    var calls = 0;
+    await pumpManager(
+      tester,
+      readSsid: () async => null,
+      hostNetworkStream: wakes.stream,
+      onHostNetworkChanged: () => calls++,
+    );
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    wakes.add(null);
+    await tester.pump();
+    expect(calls, 1);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpWidget(const SizedBox.shrink());
+    wakes.add(null);
+    await tester.pump();
+    expect(calls, 1);
+  });
 
   testWidgets('publishes the SSID once Wi-Fi is up', (tester) async {
     await pumpManager(tester, readSsid: () async => 'Home');

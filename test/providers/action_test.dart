@@ -353,6 +353,36 @@ void main() {
     );
 
     test(
+      'network recovery preserves running intent across setup failures',
+      () async {
+        final container = ProviderContainer(
+          overrides: [
+            coreActionProvider.overrideWith(_TestCoreAction.new),
+            setupActionProvider.overrideWith(_TestSetupAction.new),
+          ],
+        );
+        addTearDown(container.dispose);
+        container.read(runTimeProvider.notifier).value = 0;
+        final core =
+            container.read(coreActionProvider.notifier) as _TestCoreAction;
+        final setup =
+            container.read(setupActionProvider.notifier) as _TestSetupAction;
+        setup.setRunningResult = false;
+
+        expect(await core.recoverCore(), isFalse);
+        expect(container.read(isStartProvider), isTrue);
+        expect(container.read(coreStatusProvider), CoreStatus.disconnected);
+        expect(setup.restoreRunningCount, 1);
+        expect(setup.setRunningCount, 0);
+
+        setup.setRunningResult = true;
+        expect(await core.recoverCore(), isTrue);
+        expect(container.read(coreStatusProvider), CoreStatus.connected);
+        expect(setup.restoreRunningCount, 2);
+      },
+    );
+
+    test(
       'coalesces concurrent restart requests into one lifecycle restart',
       () async {
         final container = ProviderContainer(
@@ -926,6 +956,7 @@ class _MemoryScripts extends Scripts {
 
 class _TestSetupAction extends SetupAction {
   int setRunningCount = 0;
+  int restoreRunningCount = 0;
   int applyProfileCount = 0;
   bool setRunningResult = true;
   Completer<void>? firstApplyStarted;
@@ -934,6 +965,12 @@ class _TestSetupAction extends SetupAction {
   @override
   Future<bool> setRunning(bool running, {bool initialize = false}) async {
     setRunningCount++;
+    return setRunningResult;
+  }
+
+  @override
+  Future<bool> restoreRunning() async {
+    restoreRunningCount++;
     return setRunningResult;
   }
 
